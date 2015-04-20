@@ -24,28 +24,100 @@ if ( ! defined( 'WPINC' ) ) {
 	die( 'NSA spyware installed, thank you!' );
 }
 
-add_action( 'plugins_loaded', array( 'Prism', 'get_instance' ) );
+/**
+ * Loads Prism with custom settings.
+ * @since 20150418
+ */
+function wp_prism_load(){
+	$prism = new Prism();
+	$prism->get_instance();
+}
+add_action( 'plugins_loaded', 'wp_prism_load' );
 
+
+/**
+ * Impliments Prism into the WordPress context.
+ */
 class Prism {
 
 	protected static $instance = null;
 
-	const PRISM_VERSION = '20140418';
+	const PRISM_VERSION = '20150418';
 
-	private function __construct() {
+	private function __construct( $params = array() ) {
 
-		add_action( 'wp_enqueue_scripts', array( $this, 'register_styles' ), 0 );
-		add_action( 'wp_enqueue_scripts', array( $this, 'register_scripts' ), 0 );
-		add_action( 'wp_enqueue_scripts', array( $this, 'maybe_load_prism' ) );
+		/**
+		 * Set an array of options
+		 * which are replaced by parameters. 
+		 */
+		$default_options = array(
+			'include_scripts' => true,
+			'include_styles' => true,
+			'archive_scan' => true,
+			'shortcode' => array(
+				'tag' => 'prism',
+				'per_language' => true,
+				/**
+				 * @todo Make this reflect bundled build.
+				 */
+				'languages' => array(
+					'php',
+					'javascript',
+					'ruby',
+					'python',
+					'less'
+					),
+				),
+			);
 
+		// Replace default options with parameters.
+		$options = array_replace_recursive( $default_options, $params );
+
+		// Conditionally Load Dependencies
+		if( (bool) $options['enqueue_styles'] || (bool) $options['enqueue_scripts']  )
+			add_action( 'wp_enqueue_scripts', array( $this, 'maybe_load_prism' ) );
+		
+		// Load into WordPress Administration Panels
 		add_action( 'admin_head',    array( $this, 'print_admin_css' ) );
 		add_action( 'media_buttons', array( $this, 'add_media_button' ), 11 );
 		add_action( 'admin_footer',  array( $this, 'print_admin_javascript' ) );		
 
-		add_shortcode( 'prism', array( $this, 'shortcode' ) );
+		// Add the Shortcode
+		add_shortcode( $this->shortcode_tag(), array( $this, 'shortcode' ) );
+
 	}
 
-	public function register_styles() {
+	/**
+	 * Gets the name of the shortcode, optionally filtered.
+	 * 
+	 * @since 20150418
+	 * @return string The name of the shortcode.
+	 */
+	public function shortcode_tag(){
+		return apply_filters( 'prism_shortcode_tag', $vars['shortcode']['tag'] );
+	}
+
+	/**
+	 * Enqueues Scripts and Styles based on options.
+	 */
+	public function includes(){
+
+		if( (bool) $options['include_styles'] )
+			add_action( 'wp_enqueue_scripts', array( $this, 'register_styles' ), 0 );
+		
+		if( (bool) $options['include_scripts'] )
+			add_action( 'wp_enqueue_scripts', array( $this, 'register_scripts' ), 0 );
+
+	}
+
+	/**
+	 * Includes Prism CSS styles.
+	 *
+	 * Searches the uploads directory for prism.css
+	 * And if it's found, that is loaded as the theme.
+	 * If it's not found, then the default bundled theme is used. 
+	 */
+	public function include_styles() {
 
 		$upload_dir = wp_upload_dir();
 
@@ -60,9 +132,19 @@ class Prism {
 			
 			wp_register_style( 'prism', plugins_url( 'prism.css', __FILE__ ), array(), self::PRISM_VERSION );
 		}
+
+		wp_enqueue_style( 'prism' );
+
 	}
 
-	public function register_scripts() {
+	/**
+	 * Includes Prism Javascript.
+	 *
+	 * Searches the uploads directory for prism.js
+	 * And if it's found, that is loaded as the language set.
+	 * If it's not found, then the default bundled language set is used. 
+	 */
+	public function include_scripts() {
 
 		$upload_dir = wp_upload_dir();
 
@@ -70,26 +152,46 @@ class Prism {
 		$jsfile_url = trailingslashit( $upload_dir['baseurl'] ) . 'prism/prism.js';
 
 		if ( is_file( $jsfile_dir ) ) {
-
 			wp_register_script( 'prism', $jsfile_url, array(), filemtime( $jsfile_dir ), true );
-		
 		} else {
-			
 			wp_register_script( 'prism', plugins_url( 'prism.js', __FILE__ ), array(), self::PRISM_VERSION, true );
 		}
+
+		wp_enqueue_script( 'prism' );
+
 	}
 
+	/**
+	 * Conditionally loads Prism dependencies if required.
+	 */
 	public function maybe_load_prism() {
 
-		global $post, $wp_query;
+		/**
+		 * If both options to include scripts and styles
+		 * are off, then return early here for performance.
+		 */
+		if( !$options['include_scripts'] && !$options['include_styles'] )
+			return false;
 
+		global $post, $wp_query;
 		$post_contents = '';
 
+		/**
+		 * If we're on a single page/post template
+		 * get the post contents from the global post object.
+		 */
 		if ( is_singular() ) {
-
 			$post_contents = $post->post_content;
+		}
 
-		} elseif ( defined( 'PRISM_ARCHIVE_SCAN' ) && PRISM_ARCHIVE_SCAN ) {
+		/**
+		 * Collect all the loaded posts on the current archive page
+		 * into a single string so they can be scanned.
+		 */
+		elseif(
+			$options['archive_scan'] ||
+			( defined( 'PRISM_ARCHIVE_SCAN' ) && PRISM_ARCHIVE_SCAN )
+			){
 
 			$post_ids = wp_list_pluck( $wp_query->posts, 'ID' );
 
@@ -99,13 +201,25 @@ class Prism {
 			}
 		}
 
-		if ( strpos( $post_contents, '<code class="language-' ) !== false ) {
-
-			wp_enqueue_style( 'prism' );
-			wp_enqueue_script( 'prism' );
-		}
+		/**
+		 * Search post contents for an instance of
+		 * Prism-supported code in the HTML.
+		 * If it is found, include Prism scripts and styles.
+		 */
+		if ( strpos( $post_contents, '<code class="language-' ) !== false ) 
+			$this->includes();
+		
 	}
 
+	/**
+	 * Adds the Prism WordPress shortcode.
+	 *
+	 * @todo 	Add shortcode support for supported languages
+	 *			so that the language itself can be used as the shortcode.
+	 *			For example: [javascript][/javascript], or [php][/php]
+	 *			Loop through each provided language and add shortcode
+	 *			Then use language based on tag value, unless it matches the default tag.
+	 */
 	public function shortcode( $atts, $content = null ) {
 
 		extract( shortcode_atts( 
@@ -125,7 +239,7 @@ class Prism {
 				'data_manual'      => false,
 			),
 			$atts,
-			'prism'
+			$this->shortcode_tag()
 		) );
 
 		$pre_attr = array(
@@ -159,8 +273,7 @@ class Prism {
 				return sprintf( '<p><strong>Prism Shortcode Error:</strong> could not get remote content. HTTP response code %s</p>', esc_html( $response['response']['code'] ) );
 			}
 
-			wp_enqueue_style( 'prism' );
-			wp_enqueue_script( 'prism' );
+			$this->includes();
 
 			return sprintf( 
 				'<pre %s><code %s>%s</code></pre>',
@@ -172,8 +285,7 @@ class Prism {
 
 		if ( $data_src ) {
 
-			wp_enqueue_style( 'prism' );
-			wp_enqueue_script( 'prism' );
+			$this->includes();
 
 			$pre_attr['class'] .= " language-{$language}";
 
@@ -196,8 +308,7 @@ class Prism {
 			return '<p><strong>Prism Shortcode Error:</strong> Custom field not set or empty</p>';
 		}
 
-		wp_enqueue_style( 'prism' );
-		wp_enqueue_script( 'prism' );
+		$this->includes();
 
 		return sprintf( 
 			'<pre %s><code %s>%s</code></pre>',
@@ -228,8 +339,11 @@ class Prism {
 		return trim( $out );
 	}
 
-	public function add_media_button() {
 
+	public function add_media_button() {
+		/**
+		 * @todo Include this from external file.
+		 */
 ?>
 <a id="prism-shortcode" class="button add_media" title="Prism Shortcode Snippet">
 	<span class="wp-media-buttons-icon prism-icon"></span> Prism
@@ -239,7 +353,9 @@ class Prism {
 	}
 
 	public function print_admin_css() {
-
+		/**
+		 * @todo Include this from external file.
+		 */
 ?>
 <style>
 #prism-shortcode {
@@ -254,7 +370,9 @@ class Prism {
 	}
 
 	public function print_admin_javascript() {
-
+		/**
+		 * @todo Include this from external file.
+		 */
 ?>
 <script>
 (function ( $ ) {
@@ -264,7 +382,7 @@ class Prism {
 
 		event.preventDefault();
 
-		send_to_editor( '[prism field= language=]' );
+		send_to_editor( '[' . $this->shortcode_tag() . ' field= language=]' );
 	} );
 
 }(jQuery));
